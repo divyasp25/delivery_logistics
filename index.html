@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ResqueNet Delivery Guide</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            font-family: 'Arial', sans-serif;
+            background: #f4f4f4;
+        }
+        #container {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        #map {
+            flex: 1;
+            position: relative;
+        }
+        #logo {
+            text-align: center;
+            margin-bottom: 10px;
+            opacity: 0;
+            transform: scale(0.5);
+            animation: logo-animation 1s forwards;
+        }
+        @keyframes logo-animation {
+            to {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+        #directions {
+            width: 100%;
+            padding: 20px;
+            overflow-y: auto;
+            border-top: 1px solid #ccc;
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            height: 100%;
+        }
+        #buttons {
+            margin-top: 20px;
+            display: flex;
+            justify-content: space-between;
+        }
+        #routeDetails {
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+            padding: 10px;
+            margin-top: 10px;
+            background: #fafafa;
+            border-radius: 5px;
+        }
+        .gradient-button {
+            background: linear-gradient(90deg, #000, #1e90ff);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            transition: background 0.3s ease;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        .gradient-button:hover {
+            background: linear-gradient(90deg, #1e90ff, #000);
+        }
+        h3 {
+            font-size: 24px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            text-align: center;
+            color: #333;
+        }
+        @media (min-width: 768px) {
+            #container {
+                flex-direction: row;
+            }
+            #map {
+                width: 70%;
+            }
+            #directions {
+                width: 30%;
+                border-top: none;
+                border-left: 1px solid #ccc;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="container" class="container-fluid">
+        <div id="map" class="col-12 col-md-8"></div>
+        <div id="directions" class="col-12 col-md-4">
+            <div id="logo">
+                <img src="resquenet-2-trans.png" alt="ResqueNet" width="80" />
+            </div>
+            <h3>Delivery Directions</h3>
+            <div id="currentLocationDetails"></div>
+            <div id="routeDetails"></div>
+            <div id="buttons">
+                <button id="prevButton" class="gradient-button">Previous</button>
+                <button id="nextButton" class="gradient-button">Deliver</button>
+            </div>
+            <button id="refreshButton" class="gradient-button" style="width: 100%;">Refresh</button>
+            <div id="timer">
+                <h3>Time Until Next Refresh: <span id="refreshTimer">60:00</span></h3>
+            </div>
+        </div>
+    </div>
+    <script>
+        var map = L.map('map').setView([12.914142, 74.855957], 13);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 30
+        }).addTo(map);
+
+        var currentLocationMarker;
+        var currentLocation;
+        var radarCenter = {lat:12.91723000, lng: 74.85603000};
+        var radarRadius = 50;
+        var deliveryInterval = 60; // in minutes
+        var deliveryStartTime = Date.now();
+        
+        var supplyRequests = [
+            // Coimbatore
+            {lat: 12.980712, lng: 74.803145},
+            {lat: 12.8599439, lng: 74.8402387},
+            {lat: 13.343730, lng: 74.746640},
+            {lat: 12.885200, lng: 74.855770},
+            {lat: 12.853930, lng: 74.837650},
+            {lat: 12.893980, lng: 74.853104}
+        ];
+
+        var radarCircle = L.circle([radarCenter.lat, radarCenter.lng], {
+            color: 'blue',
+            fillColor: '#0076ff',
+            fillOpacity: 0.2,
+            radius: radarRadius * 1000
+        }).addTo(map);
+
+        function isWithinRadar(location) {
+            var distance = getDistance(radarCenter, location);
+            return distance <= radarRadius;
+        }
+
+        function createMarker(location, color = 'red') {
+            return L.circleMarker([location.lat, location.lng], {
+                color: color,
+                fillColor: color,
+                fillOpacity: 1,
+                radius: 8
+            }).addTo(map);
+        }
+
+        supplyRequests.forEach(function(location) {
+            location.marker = createMarker(location, isWithinRadar(location) ? 'red' : 'gray');
+        });
+
+        var control = L.Routing.control({
+            waypoints: [],
+            router: L.Routing.osrmv1({
+                serviceUrl: 'https://router.project-osrm.org/route/v1'
+            }),
+            createMarker: function() { return null; },
+            lineOptions: {
+                styles: [{color: 'blue', opacity: 0.6, weight: 4}]
+            }
+        }).addTo(map);
+
+        function sortSupplyRequests() {
+            supplyRequests = supplyRequests.filter(isWithinRadar);
+            supplyRequests.sort(function(a, b) {
+                if (a.marker.options.color === b.marker.options.color) {
+                    var distA = getDistance(currentLocation, a);
+                    var distB = getDistance(currentLocation, b);
+                    return distA - distB;
+                }
+                return a.marker.options.color === 'yellow' ? -1 : 1;
+            });
+        }
+
+        function getDistance(loc1, loc2) {
+            var lat1 = loc1.lat, lon1 = loc1.lng;
+            var lat2 = loc2.lat, lon2 = loc2.lng;
+            var p = 0.017453292519943295;
+            var c = Math.cos;
+            var a = 0.5 - c((lat2 - lat1) * p)/2 + 
+                    c(lat1 * p) * c(lat2 * p) * 
+                    (1 - c((lon2 - lon1) * p))/2;
+            return 12742 * Math.asin(Math.sqrt(a));
+        }
+
+        var currentIndex = 0;
+
+        function showRouteTo(index) {
+            if (index >= 0 && index < supplyRequests.length) {
+                var location = supplyRequests[index];
+                control.setWaypoints([
+                    L.latLng(currentLocation.lat, currentLocation.lng),
+                    L.latLng(location.lat, location.lng)
+                ]);
+                control.on('routesfound', function(e) {
+                    var routes = e.routes;
+                    var summary = routes[0].summary;
+                    var instructions = routes[0].instructions;
+                    updateRouteDetails(index, instructions);
+                    updateCurrentLocationDetails(summary);
+                });
+            }
+        }
+
+        function updateRouteDetails(index, instructions) {
+            var routeDetails = document.getElementById('routeDetails');
+            var instructionsHtml = instructions.map(function(instruction) {
+                return `<li>${instruction.text}</li>`;
+            }).join('');
+            routeDetails.innerHTML = `
+                <p>Delivery location: (${supplyRequests[index].lat}, ${supplyRequests[index].lng})</p>
+                <ul>${instructionsHtml}</ul>
+            `;
+            addDetailClickListeners();
+        }
+
+        function updateCurrentLocationDetails(summary) {
+            var currentLocationDetails = document.getElementById('currentLocationDetails');
+            currentLocationDetails.innerHTML = `
+                <p>Total distance: ${(summary.totalDistance / 1000).toFixed(2)} km</p>
+                <p>Estimated time: ${(summary.totalTime / 60).toFixed(2)} minutes</p>
+            `;
+        }
+
+        function updateCurrentPosition(position) {
+            // Use Geolocation API to get the current location
+            navigator.geolocation.getCurrentPosition(function(position) {
+                var lat = position.coords.latitude;
+                var lng = position.coords.longitude;
+                currentLocation = { lat: lat, lng: lng };
+        
+                if (currentLocationMarker) {
+                    currentLocationMarker.setLatLng([lat, lng]);
+                } else {
+                    currentLocationMarker = L.marker([lat, lng]).addTo(map).bindPopup("You are here").openPopup();
+                }
+        
+                map.setView([lat, lng], 13);
+                sortSupplyRequests();
+                showRouteTo(currentIndex);
+            });
+        }
+        
+
+        function addDetailClickListeners() {
+            var routeDetails = document.getElementById('routeDetails');
+            var detailItems = routeDetails.getElementsByTagName('li');
+            for (var i = 0; i < detailItems.length; i++) {
+                (function(index) {
+                    detailItems[index].addEventListener('click', function() {
+                        map.setView([supplyRequests[currentIndex].lat, supplyRequests[currentIndex].lng], 13);
+                        L.popup()
+                            .setLatLng([supplyRequests[currentIndex].lat, supplyRequests[currentIndex].lng])
+                            .setContent(`Supply Request at (${supplyRequests[currentIndex].lat}, ${supplyRequests[currentIndex].lng})`)
+                            .openOn(map);
+                    });
+                })(i);
+            }
+        }
+
+        document.getElementById('nextButton').addEventListener('click', function() {
+            if (currentIndex < supplyRequests.length - 1) {
+                supplyRequests[currentIndex].marker.setStyle({color: 'green', fillColor: 'green'});
+                currentIndex++;
+                showRouteTo(currentIndex);
+            } else {
+                supplyRequests[currentIndex].marker.setStyle({color: 'green', fillColor: 'green'});
+                control.setWaypoints([]); // Clear the route
+                alert("All deliveries completed!");
+            }
+        });
+
+        document.getElementById('prevButton').addEventListener('click', function() {
+            if (currentIndex > 0) {
+                currentIndex--;
+                showRouteTo(currentIndex);
+            }
+        });
+
+        navigator.geolocation.watchPosition(updateCurrentPosition, function(error) {
+            console.error("Error getting current location: ", error);
+        }, {
+            enableHighAccuracy: true,
+            maximumAge: 0,
+            timeout: 5000
+        });
+
+        var allNewRequests = [
+            {lat: 12.870496518, lng: 74.84082997},
+            {lat: 12.941329568, lng: 74.87082985},
+            {lat: 12.83333, lng: 74.8666632},
+            {lat: 12.86936, lng: 74.84256},
+            {lat: 12.9244796354, lng: 74.890746437},
+            {lat: 12.873913171, lng: 74.8383966464},
+            {lat: 12.8541132502, lng: 74.8361466554}
+        ];
+
+        var currentRequestIndex = 0;
+        var completedRequests = 0;
+
+        var timerValue = 3600; // 60 minutes in seconds
+        var timerInterval;
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            timerInterval = setInterval(updateTimer, 1000);
+        }
+
+        function updateTimer() {
+            if (timerValue <= 0) {
+                clearInterval(timerInterval);
+                refreshRadar();
+                timerValue = 3600; // Reset timer to 60 minutes
+            } else {
+                timerValue--;
+                var minutes = Math.floor(timerValue / 60);
+                var seconds = timerValue % 60;
+                document.getElementById('refreshTimer').textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+            }
+        }
+
+        function refreshRadar() {
+            var now = Date.now();
+            var elapsed = (now - deliveryStartTime) / (1000 * 60); // in minutes
+
+            supplyRequests.forEach(function(request) {
+                if (request.marker.options.color === 'green') {
+                    map.removeLayer(request.marker); // Remove green markers
+                    completedRequests++;
+                } else if (request.marker.options.color === 'red') {
+                    request.marker.setStyle({color: 'yellow', fillColor: 'yellow'});
+                }
+            });
+
+            if (completedRequests > 0 && completedRequests % 5 === 0 && currentRequestIndex < allNewRequests.length) {
+                // Add next set of new requests as red markers (simulate new data)
+                for (var i = 0; i < 5 && currentRequestIndex < allNewRequests.length; i++, currentRequestIndex++) {
+                    var location = allNewRequests[currentRequestIndex];
+                    location.marker = createMarker(location, 'red');
+                    supplyRequests.push(location);
+                }
+                completedRequests = 0; // Reset the counter
+            }
+
+            if (elapsed >= deliveryInterval) {
+                deliveryStartTime = now;
+                // Initial new requests (if not already added)
+                for (var i = 0; i < 5 && currentRequestIndex < allNewRequests.length; i++, currentRequestIndex++) {
+                    var location = allNewRequests[currentRequestIndex];
+                    location.marker = createMarker(location, 'red');
+                    supplyRequests.push(location);
+                }
+            }
+
+            startTimer(); // Restart the timer after refresh
+        }
+
+        document.getElementById('refreshButton').addEventListener('click', refreshRadar);
+
+        startTimer(); // Initialize the timer on page load
+    </script>
+</body>
+</html>
